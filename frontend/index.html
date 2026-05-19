@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>教育 RAG 智能体</title>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span>
+          </div>
+          <div>
+            <strong>教育 RAG 智能体</strong>
+            <small>MOOC 学习助手</small>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" data-section="qa">
+            <span class="nav-icon">Q</span>
+            <span>智能问答</span>
+          </button>
+          <button class="nav-item" data-section="path">
+            <span class="nav-icon">P</span>
+            <span>学习路线</span>
+          </button>
+          <button class="nav-item" data-section="diagnosis">
+            <span class="nav-icon">D</span>
+            <span>学习诊断</span>
+          </button>
+          <button class="nav-item" data-section="library">
+            <span class="nav-icon">R</span>
+            <span>资源库</span>
+          </button>
+          <button class="nav-item" data-section="profile">
+            <span class="nav-icon">U</span>
+            <span>我的学习</span>
+          </button>
+          <button class="nav-item" data-section="notes">
+            <span class="nav-icon">N</span>
+            <span>笔记本</span>
+          </button>
+        </nav>
+
+        <button class="profile-chip" type="button">
+          <span class="avatar">未</span>
+          <span>
+            <strong>未登录</strong>
+            <small>点击登录 / 注册</small>
+          </span>
+        </button>
+      </aside>
+
+      <main class="workspace">
+        <section class="task-hero" aria-label="当前任务">
+          <div class="task-visual">
+            <div class="paper-card">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+          <div class="task-main">
+            <small>当前任务</small>
+            <h1 id="taskTitle">推荐人工智能入门课程</h1>
+            <div class="tag-row">
+              <span>场景：MOOC 学习</span>
+              <span id="apiStatusTag">API 连接中</span>
+            </div>
+          </div>
+          <div class="task-summary">
+            <small>请求总结</small>
+            <p id="taskSummary">
+              正在连接后端 Agent，页面会从资源库和 RAG 流程中获取真实结果。
+            </p>
+            <button id="expandSummary" type="button">展开更多</button>
+          </div>
+        </section>
+
+        <section class="content-card">
+          <div class="tabs" role="tablist" aria-label="Agent 输出类型">
+            <button class="tab-button" data-mode="answer" role="tab">回答</button>
+            <button class="tab-button active" data-mode="resources" role="tab">推荐资源</button>
+            <button class="tab-button" data-mode="path" role="tab">学习路线</button>
+            <button class="tab-button" data-mode="diagnosis" role="tab">学习诊断</button>
+          </div>
+
+          <div class="toolbar">
+            <label>
+              资源类型
+              <select id="typeFilter">
+                <option value="all">全部</option>
+                <option value="video">视频课程</option>
+                <option value="exercise">练习题集</option>
+                <option value="article">图文资料</option>
+              </select>
+            </label>
+            <label>
+              难度
+              <select id="difficultyFilter">
+                <option value="all">全部</option>
+                <option value="easy">易</option>
+                <option value="medium">中等</option>
+                <option value="hard">困难</option>
+              </select>
+            </label>
+            <label>
+              知识点
+              <select id="knowledgeFilter">
+                <option value="all">全部</option>
+                <option value="导数定义">导数定义</option>
+                <option value="切线斜率">切线斜率</option>
+                <option value="函数图像">函数图像</option>
+              </select>
+            </label>
+            <div class="sort-control">
+              <select id="sortSelect" aria-label="排序方式">
+                <option value="score">推荐度</option>
+                <option value="difficulty">难度</option>
+                <option value="duration">时长</option>
+              </select>
+              <button id="gridToggle" class="icon-button active" type="button" title="卡片视图">▦</button>
+              <button id="listToggle" class="icon-button" type="button" title="列表视图">☰</button>
+            </div>
+          </div>
+
+          <div id="answerPanel" class="mode-panel hidden">
+            <article class="agent-answer">
+              <h2>回答</h2>
+              <p id="answerText">输入学习问题后，Agent 会在这里给出基于证据的回答。</p>
+            </article>
+          </div>
+
+          <div id="resourcesPanel" class="mode-panel">
+            <div class="result-meta">
+              <span id="resultCount">共找到 12 个资源</span>
+            </div>
+            <div id="resourceGrid" class="resource-grid"></div>
+            <div class="pagination">
+              <span>共 12 条</span>
+              <button type="button" disabled>‹</button>
+              <button type="button" class="active">1</button>
+              <button type="button">2</button>
+              <button type="button">›</button>
+              <select aria-label="每页条数">
+                <option>6 条/页</option>
+                <option>12 条/页</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="pathPanel" class="mode-panel hidden">
+            <div class="timeline">
+              <div class="timeline-step">
+                <span>1</span>
+                <div>
+                  <h3>概念建立</h3>
+                  <p>先理解导数定义、平均变化率与瞬时变化率。</p>
+                </div>
+              </div>
+              <div class="timeline-step">
+                <span>2</span>
+                <div>
+                  <h3>图像理解</h3>
+                  <p>结合函数图像理解切线斜率和局部变化趋势。</p>
+                </div>
+              </div>
+              <div class="timeline-step">
+                <span>3</span>
+                <div>
+                  <h3>练习巩固</h3>
+                  <p>完成基础题和典型题，检查是否能解释每一步含义。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="diagnosisPanel" class="mode-panel hidden">
+            <div class="diagnosis-grid">
+              <article>
+                <h3>可能卡点</h3>
+                <p>导数定义和几何意义之间没有建立连接，导致只会套公式。</p>
+              </article>
+              <article>
+                <h3>补救建议</h3>
+                <p>先用图像观察切线斜率，再回到公式理解极限含义。</p>
+              </article>
+              <article>
+                <h3>下一步</h3>
+                <p>先学习一个讲解资源，再做 3 道基础题验证理解。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <form id="chatForm" class="chat-composer">
+          <input id="chatInput" type="text" placeholder="输入你的学习问题，例如：推荐人工智能入门课程" />
+          <button type="submit">发送</button>
+        </form>
+      </main>
+
+      <aside class="detail-panel" aria-label="资源详情">
+        <button id="closeDetail" class="close-button" type="button" aria-label="关闭详情">×</button>
+        <h2>资源详情</h2>
+        <div class="preview-card">
+          <div class="preview-label" id="detailType">视频课程</div>
+          <div class="resource-preview">
+            <strong id="detailPreviewTitle">MOOC 资源</strong>
+            <span>课程、章节、练习等资源信息来自 MOOPer 数据库。</span>
+          </div>
+          <span id="detailDuration" class="duration">23:45</span>
+        </div>
+        <h3 id="detailTitle">导数几何意义典型例题精讲</h3>
+        <div class="detail-tags">
+          <span id="detailDurationTag">时长 23:45</span>
+          <span id="detailDifficulty">中等</span>
+          <span id="detailScore">推荐度 92%</span>
+        </div>
+        <p class="detail-source" id="detailSource">来源：高中数学名师课堂　更新：2025-04-15</p>
+
+        <section class="reason-box">
+          <h4>推荐理由</h4>
+          <p id="detailReason">
+            该资源通过多个典型例题，详细讲解导数的几何意义和切线斜率在不同情境下的应用。
+          </p>
+        </section>
+
+        <section class="source-box">
+          <h4>证据来源</h4>
+          <ul id="evidenceList"></ul>
+          <button type="button" class="link-button">查看全部 5 条证据来源</button>
+        </section>
+
+        <div class="detail-actions">
+          <button type="button" class="primary-button">记录查看</button>
+          <button type="button" class="secondary-button">加入我的学习</button>
+        </div>
+      </aside>
+    </div>
+
+    <script src="/frontend/app.js"></script>
+  </body>
+</html>
