@@ -1,6 +1,6 @@
 # 面向 MOOC 学习场景的 RAG 教育资源推荐与学习规划 Agent
 
-本项目是一个以 RAG 和受控工具调用为核心的教育 Agent 后端原型，面向 MOOC 学习场景，支持教育资源推荐、知识点问答、学习路线规划、学习困难诊断、用户反馈调整和执行轨迹评估。
+本项目是一个面向 MOOC 学习场景的 RAG 教育 Agent 全栈原型，以 RAG、受控工具调用、用户记忆和可观测 AgentLoop 为核心，支持教育资源推荐、知识点问答、学习路线规划、学习困难诊断、用户反馈调整和执行轨迹追踪。
 
 项目目标不是只做一个“课程搜索器”，而是构建一个工程化 Agent 系统：
 
@@ -25,7 +25,29 @@
   -> 记录 trace、推荐日志、反馈和必要的人工兜底 case
 ```
 
-当前重点在后端 Agent 能力，并已经提供 FastAPI 接口、终端入口和 API 驱动的前端页面，用于在上线前验证主链路。
+当前版本已经打通本地端到端主链路：FastAPI 负责提供 Agent、资源、用户、反馈和笔记接口；前端页面通过 API 调用真实后端；CLI 用于无前端场景下调试 Agent 执行过程。仓库不包含运行数据，完整体验需要在本地构建 MOOPer 数据库和 Chroma 向量库。
+
+## 仓库内容说明
+
+本仓库只上传项目源码、构建脚本、配置样例和前端页面，不上传本地运行数据、测试目录或私有配置。
+
+以下目录已在 `.gitignore` 中忽略，不会提交到 GitHub：
+
+```text
+data/                 # 原始 MOOPer 数据、SQLite 数据库、Chroma 向量库、trace、评估报告
+tests/                # 本地测试用例
+.env                  # 本地密钥配置
+```
+
+因此 clone 仓库后需要自行准备 MOOPer 数据集并重新构建数据库和向量库。项目提供了对应脚本：
+
+```text
+scripts/build_mooper_db.py
+scripts/init_app_db.py
+scripts/build_chunks.py
+scripts/build_vector_index.py
+```
+
 
 ## 总体架构
 
@@ -163,24 +185,12 @@ scripts/
   run_agent_cli.py             # 终端交互入口
   run_eval.py                  # 离线评估入口
 
-data/
-  processed/
-    mooper.db                  # MOOPer 资源数据库
-    app.db                     # 用户、反馈、trace、handoff、tool call 数据库
-
-  indexes/
-    chunks.jsonl
-    chunk_id_map.json
-
-  chroma/                      # Chroma 持久化向量库
-  traces/                      # 可读 trace JSON
-  eval/                        # 评估用例
-  eval_reports/                # 评估报告
+data/                          # 本地运行数据，已被 .gitignore 忽略，不上传 GitHub
 ```
 
 ## API 与前端
 
-当前提供一个 FastAPI 后端和 API 驱动的前端 MVP：
+当前提供一个 FastAPI 后端和 API 驱动的前端 MVP。前端不是纯静态展示页，会通过后端接口读取资源、用户画像、笔记、反馈和 Agent 输出：
 
 ```text
 frontend/
@@ -200,19 +210,23 @@ app/api/schemas.py
 
 - `GET /api/health`：健康检查
 - `POST /api/agent`：调用 AgentOrchestrator，返回回答、推荐资源、证据、trace id
+- `POST /api/agent/stream`：流式返回 Agent 回答
+- `POST /api/auth/register`：注册用户
+- `POST /api/auth/login`：登录用户
 - `GET /api/resources/search`：从 MOOPer 资源库搜索候选资源
 - `GET /api/resources/{resource_id}`：读取资源详情、章节、练习、知识点
 - `POST /api/feedback`：记录用户对资源的反馈
 - `GET /api/users/{user_id}/context`：查看用户画像、知识状态、反馈和推荐历史
-
-界面采用左侧导航、中间 Agent 工作区、右侧资源详情的三栏布局，包含：
-
-- 当前任务摘要
-- 回答 / 推荐资源 / 学习路线 / 学习诊断四个视图
-- 推荐资源筛选、排序、卡片 / 列表切换
-- 资源详情、推荐理由、证据来源
-- 聊天输入框，直接调用 `/api/agent`
-- 资源卡片反馈，直接写入 `/api/feedback`
+- `PUT /api/users/{user_id}/profile`：更新用户画像
+- `GET /api/users/{user_id}/saved-resources`：查看已加入学习的资源
+- `POST /api/users/saved-resources`：加入学习资源
+- `DELETE /api/users/{user_id}/saved-resources/{resource_id}`：移除已加入资源
+- `GET /api/users/{user_id}/notes`：读取学习笔记
+- `POST /api/users/notes`：新建学习笔记
+- `PUT /api/users/{user_id}/notes/{note_id}`：更新学习笔记
+- `DELETE /api/users/{user_id}/notes/{note_id}`：删除学习笔记
+- `GET /api/users/{user_id}/settings`：读取前端侧 Agent 设置
+- `PUT /api/users/settings`：更新前端侧 Agent 设置
 
 运行：
 
@@ -225,8 +239,6 @@ python -m uvicorn app.api.server:app --host 127.0.0.1 --port 8010 --reload
 ```text
 http://127.0.0.1:8010/
 ```
-
-前端不再依赖本地静态模拟数据。页面加载、聊天、资源详情和反馈都会请求后端 API。
 
 ## 核心流程
 
@@ -538,7 +550,7 @@ Trace 用于检查：
 
 评估模块独立于主流程，用于离线回放和质量检查。
 
-评估文件：
+本地评估文件：
 
 ```text
 data/eval/
@@ -549,7 +561,7 @@ data/eval/
   failure_cases.jsonl
 ```
 
-每类目前包含 22 条样例 case。
+评估用例保存在本地 `data/eval/`，默认不随 GitHub 仓库上传。仓库保留评估代码与运行入口，评估数据需要在本地准备或从私有数据目录恢复。
 
 评估维度：
 
@@ -566,6 +578,21 @@ data/eval_reports/latest_eval.json
 data/eval_reports/latest_eval.md
 ```
 
+## 本地运行准备
+
+因为仓库不包含 `data/`，首次 clone 后需要先准备本地数据。
+
+推荐顺序：
+
+```text
+1. 下载并解压 MOOPer 数据集到 data/raw/
+2. 构建 data/processed/mooper.db
+3. 初始化 data/processed/app.db
+4. 构建 data/indexes/chunks.jsonl
+5. 构建 data/chroma 向量库
+6. 启动 FastAPI 服务或 CLI
+```
+
 ## 运行方式
 
 ### 1. 安装依赖
@@ -574,19 +601,27 @@ data/eval_reports/latest_eval.md
 pip install -r requirements.txt
 ```
 
-### 2. 初始化 app.db
+### 2. 构建 mooper.db
+
+请先将 MOOPer 原始数据放到 `data/raw/`，再执行：
+
+```powershell
+python scripts/build_mooper_db.py
+```
+
+### 3. 初始化 app.db
 
 ```powershell
 python scripts/init_app_db.py
 ```
 
-### 3. 构建 RAG chunks
+### 4. 构建 RAG chunks
 
 ```powershell
 python scripts/build_chunks.py --types course,chapter,exercise,knowledge_point --output data/indexes/chunks.jsonl
 ```
 
-### 4. 构建 Chroma 向量库
+### 5. 构建 Chroma 向量库
 
 ```powershell
 python scripts/build_vector_index.py --reset --batch-size 64
@@ -601,7 +636,7 @@ LLM_MODEL=qwen-plus-2025-04-28
 EMBEDDING_MODEL=text-embedding-v4
 ```
 
-### 5. 终端测试 Agent
+### 6. 终端测试 Agent
 
 交互模式：
 
@@ -621,13 +656,13 @@ python scripts/run_agent_cli.py --query "零基础三个月学习机器学习路
 python scripts/run_agent_cli.py --query "推荐人工智能入门课程" --json
 ```
 
-### 6. 检索用例
+### 7. 检索用例
 
 ```powershell
 python scripts/run_retrieval_cases.py --top-k 5
 ```
 
-### 7. 离线评估
+### 8. 离线评估
 
 ```powershell
 python scripts/run_eval.py --suites retrieval,recommendation,qa,agent_loop --top-k 5
@@ -660,38 +695,3 @@ AGENT_LOOP_TIMEOUT_SECONDS=30
 AGENT_STEP_TIMEOUT_SECONDS=15
 LLM_VALIDATION_FAILURE_THRESHOLD=2
 ```
-
-## 当前实现状态
-
-已完成：
-
-- 配置层、日志、结构化异常
-- SQLite 连接和 app.db migrations
-- MOOPer ResourceStore
-- RAG chunk、embedding、Chroma 向量库
-- Query Rewriter
-- Hybrid Retriever
-- Rule-based + LLM Reranker
-- Evidence Builder
-- UserStore / UserService
-- Router / Orchestrator / AgentState
-- FunctionCallRuntime
-- 受控工具调用型 AgentLoop
-- Recommendation Pipeline
-- Learning Path Planner
-- Diagnosis Planner
-- ResponseGenerator
-- Trace JSON + SQLite trace
-- RuntimeGuard + Handoff
-- Evaluation 模块与样例评估集
-- CLI 测试入口
-- FastAPI API 层
-- API 驱动的前端界面
-
-后续可以继续完善：
-
-- LLM-as-Judge 评估
-- failure_cases 的自动故障注入执行器
-- 更细粒度的用户知识状态更新
-- 多轮对话中的长期记忆摘要策略
-- 前端工程化构建、登录鉴权、限流和监控
