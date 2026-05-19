@@ -51,52 +51,147 @@ scripts/build_vector_index.py
 
 ## 总体架构
 
-```text
-用户请求
-  |
-  v
-AgentOrchestrator
-  |
-  +-- MemoryService
-  |     -> session memory / user memory / feedback memory / knowledge state
-  |
-  +-- Router
-  |     -> RoutingDecision
-  |        task_type
-  |        needs_rag
-  |        needs_user_profile
-  |        needs_agent_loop
-  |        needs_clarification
-  |        pipeline
-  |
-  +-- Pipeline Dispatch
-        |
-        +-- Clarification
-        +-- RAG QA
-        +-- Recommendation Pipeline
-        +-- AgentLoop: Learning Path / Diagnosis
-        +-- Feedback Adjustment
-        +-- Direct Chat
+```mermaid
+flowchart TB
+    subgraph Client["入口层"]
+        Web["Web 前端<br/>frontend/index.html + app.js"]
+        CLI["CLI 调试入口<br/>scripts/run_agent_cli.py"]
+    end
 
-AgentLoop
-  |
-  +-- FunctionCallRuntime
-  |     -> get_user_context
-  |     -> search_courses
-  |     -> get_course_detail
-  |
-  +-- Internal Components
-        -> RagRetriever
-        -> EvidenceBuilder
-        -> LearningPathPlanner / DiagnosisPlanner
-        -> ResponseGenerator
+    subgraph API["API 层"]
+        FastAPI["FastAPI Server<br/>app/api/server.py"]
+        AuthAPI["登录 / 注册"]
+        AgentAPI["Agent 对话 / 流式输出"]
+        ResourceAPI["资源搜索 / 资源详情"]
+        UserAPI["用户画像 / 笔记 / 已加入资源"]
+        FeedbackAPI["资源反馈"]
+    end
 
-Observability & Safety
-  |
-  +-- AgentTraceRecorder
-  +-- RuntimeGuard
-  +-- HandoffService
-  +-- EvaluationRunner
+    subgraph AgentCore["Agent 核心层"]
+        Orchestrator["AgentOrchestrator<br/>统一调度入口"]
+        State["AgentState<br/>query / user_context / memory_context / evidence / trace"]
+        Router["Router<br/>输出 RoutingDecision"]
+        Memory["MemoryService<br/>组装分层上下文"]
+        Dispatch{"按 pipeline 分流"}
+    end
+
+    subgraph Tasks["任务层"]
+        Recommend["资源推荐<br/>RecommendationPipeline"]
+        QA["知识点问答<br/>RAG QA"]
+        LearningPath["学习路线<br/>AgentLoop + LearningPathPlanner"]
+        Diagnosis["学习诊断<br/>AgentLoop + DiagnosisPlanner"]
+        Feedback["反馈调整<br/>FeedbackService"]
+        Clarify["信息不足追问"]
+    end
+
+    subgraph RAG["RAG 与证据层"]
+        Rewrite["QueryRewriter<br/>LLM 改写 + 规则回退"]
+        Retrieve["RagRetriever<br/>向量召回 + 关键词召回"]
+        Rerank["HybridReranker<br/>规则粗排 + LLM 精排"]
+        Evidence["EvidenceBuilder<br/>课程 / 章节 / 练习 / 知识点证据包"]
+    end
+
+    subgraph Tooling["工具调用层"]
+        ToolRuntime["FunctionCallRuntime<br/>schema 校验 / 参数补全 / 权限 / 幂等 / 结果校验"]
+        Registry["ToolRegistry"]
+        ResourceTool["ResourceTool"]
+        UserTool["UserTool"]
+        FeedbackTool["FeedbackTool"]
+    end
+
+    subgraph Generation["生成层"]
+        Generator["ResponseGenerator<br/>证据约束回答 + fallback"]
+        Prompts["Prompts"]
+        LLM["LLM Client<br/>OpenAI-compatible / DashScope"]
+    end
+
+    subgraph Storage["本地数据层（不上传 GitHub）"]
+        ResourceStore["ResourceStore"]
+        UserStore["UserStore"]
+        TraceStore["TraceStore"]
+        HandoffStore["HandoffStore"]
+        VectorStore["Chroma VectorStore"]
+        MooperDB[("mooper.db<br/>课程 / 章节 / 练习 / 知识点")]
+        AppDB[("app.db<br/>用户 / 画像 / 反馈 / 笔记 / trace")]
+        ChromaDB[("data/chroma<br/>向量索引")]
+        TraceFiles[("data/traces<br/>可读 trace JSON")]
+    end
+
+    subgraph Ops["可观测性与安全兜底"]
+        Trace["AgentTraceRecorder"]
+        Guard["RuntimeGuard<br/>最大轮次 / 超时 / 失败分类"]
+        Handoff["HandoffService<br/>人工兜底 case"]
+        Eval["Evaluation<br/>离线评估入口"]
+    end
+
+    Web --> FastAPI
+    CLI --> Orchestrator
+    FastAPI --> AuthAPI
+    FastAPI --> AgentAPI
+    FastAPI --> ResourceAPI
+    FastAPI --> UserAPI
+    FastAPI --> FeedbackAPI
+    AgentAPI --> Orchestrator
+
+    Orchestrator --> State
+    Orchestrator --> Memory
+    Orchestrator --> Router
+    Memory --> State
+    Router --> Dispatch
+
+    Dispatch --> Recommend
+    Dispatch --> QA
+    Dispatch --> LearningPath
+    Dispatch --> Diagnosis
+    Dispatch --> Feedback
+    Dispatch --> Clarify
+
+    Recommend --> RAG
+    QA --> RAG
+    LearningPath --> RAG
+    Diagnosis --> RAG
+    Rewrite --> Retrieve --> Rerank --> Evidence
+
+    LearningPath --> ToolRuntime
+    Diagnosis --> ToolRuntime
+    Feedback --> ToolRuntime
+    ToolRuntime --> Registry
+    Registry --> ResourceTool
+    Registry --> UserTool
+    Registry --> FeedbackTool
+
+    Recommend --> Generator
+    QA --> Generator
+    LearningPath --> Generator
+    Diagnosis --> Generator
+    Feedback --> Generator
+    Clarify --> Generator
+    Generator --> Prompts --> LLM
+    Generator --> AgentAPI
+
+    ResourceAPI --> ResourceStore
+    UserAPI --> UserStore
+    FeedbackAPI --> UserStore
+    ResourceTool --> ResourceStore
+    UserTool --> UserStore
+    FeedbackTool --> UserStore
+    Retrieve --> VectorStore
+    Retrieve --> ResourceStore
+    Evidence --> ResourceStore
+
+    ResourceStore --> MooperDB
+    UserStore --> AppDB
+    TraceStore --> AppDB
+    HandoffStore --> AppDB
+    VectorStore --> ChromaDB
+    Trace --> TraceFiles
+
+    Orchestrator --> Trace
+    LearningPath --> Guard
+    Diagnosis --> Guard
+    Guard --> Handoff --> HandoffStore
+    Trace --> TraceStore
+    Eval --> Orchestrator
 ```
 
 ## 目录结构
