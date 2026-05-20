@@ -11,6 +11,7 @@ from app.memory.knowledge_state import KnowledgeStateMemory
 from app.memory.resource_memory import ResourceMemory
 from app.memory.session_memory import SessionMemory
 from app.memory.user_memory import UserMemory
+from app.rag.query_constraints import extract_query_constraints, merge_excluded_keywords
 from app.services.user_service import UserService
 from app.stores.user_store import UserStore
 
@@ -51,13 +52,31 @@ class MemoryService:
     ) -> Dict[str, Any]:
         context = user_context or self.user_service.get_user_context(user_id)
         raw_memory = self._build_raw_memory(user_id=user_id, session_id=session_id, user_context=context)
+        query_constraints = extract_query_constraints(query)
+        ranking_context = self._ranking_context(raw_memory)
+        ranking_constraints = dict(ranking_context.get("constraints") or {})
+        ranking_constraints["excluded_keywords"] = merge_excluded_keywords(
+            ranking_constraints.get("excluded_keywords"),
+            query_constraints.excluded_keywords,
+        )
+        ranking_context["constraints"] = ranking_constraints
+        ranking_context["negative_terms"] = query_constraints.negative_phrases
+        ranking_context["penalize_keywords"] = merge_excluded_keywords(
+            ranking_context.get("penalize_keywords"),
+            query_constraints.excluded_keywords,
+        )
+        planning_context = self._planning_context(raw_memory)
+        planning_context["negative_terms"] = query_constraints.negative_phrases
+        generation_context = self._generation_context(raw_memory)
+        generation_context["negative_terms"] = query_constraints.negative_phrases
+        generation_context["excluded_keywords"] = query_constraints.excluded_keywords
         base_contexts = {
             "raw_memory": raw_memory,
             "routing_context": self._routing_context(raw_memory, query),
             "retrieval_context": self._retrieval_context(raw_memory, query),
-            "ranking_context": self._ranking_context(raw_memory),
-            "planning_context": self._planning_context(raw_memory),
-            "generation_context": self._generation_context(raw_memory),
+            "ranking_context": ranking_context,
+            "planning_context": planning_context,
+            "generation_context": generation_context,
         }
         prompt_contexts = self.context_builder.build_all(
             raw_memory=raw_memory,
@@ -114,6 +133,7 @@ class MemoryService:
         session = raw_memory["session_memory"]
         user = raw_memory["user_memory"]
         feedback = raw_memory["feedback_memory"]
+        query_constraints = extract_query_constraints(query)
         return {
             "query": query,
             "last_routing_decision": session.get("last_routing_decision") or {},
@@ -122,6 +142,8 @@ class MemoryService:
             "known_learning_stage": user.get("learning_stage") or "",
             "known_goal": (user.get("goals") or [""])[0] if user.get("goals") else "",
             "recent_feedback_intent": feedback.get("recent_feedback_summary") or "",
+            "negative_terms": query_constraints.negative_phrases,
+            "excluded_keywords": query_constraints.excluded_keywords,
             "profile": {
                 "learning_stage": user.get("learning_stage") or "",
                 "preferred_subjects": user.get("preferred_subjects") or [],
@@ -133,8 +155,12 @@ class MemoryService:
     def _retrieval_context(self, raw_memory: Dict[str, Any], query: str) -> Dict[str, Any]:
         user = raw_memory["user_memory"]
         knowledge = raw_memory["knowledge_state"]
+        query_constraints = extract_query_constraints(query)
         return {
             "query": query,
+            "positive_query": query_constraints.positive_query,
+            "negative_terms": query_constraints.negative_phrases,
+            "excluded_keywords": query_constraints.excluded_keywords,
             "preferred_subjects": user.get("preferred_subjects") or [],
             "learning_goal": (user.get("goals") or [""])[0] if user.get("goals") else "",
             "weak_knowledge_points": knowledge.get("weak_points") or [],
@@ -148,10 +174,11 @@ class MemoryService:
         feedback = raw_memory["feedback_memory"]
         resources = raw_memory["resource_memory"]
         adjustments = feedback.get("recommendation_adjustments") or {}
+        constraints = dict(user.get("constraints") or {})
         return {
             "learning_stage": user.get("learning_stage") or "",
             "preferred_resource_types": user.get("preferred_resource_types") or [],
-            "constraints": user.get("constraints") or {},
+            "constraints": constraints,
             "liked_resource_ids": feedback.get("liked_resource_ids") or [],
             "disliked_resource_ids": feedback.get("disliked_resource_ids") or [],
             "avoid_repeating_resource_ids": resources.get("avoid_repeating_resource_ids") or [],

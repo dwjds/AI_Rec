@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from app.rag.query_constraints import extract_query_constraints, merge_excluded_keywords
 from app.rag.retriever import RetrievalResult
 from app.stores.resource_store import ResourceStore
 
@@ -96,6 +97,12 @@ class EvidenceBuilder:
         items = self._sort_by_task_priority(items, normalized_task)[:max_items]
         sections = self._build_sections(items, normalized_task)
         query_rewrite = self._extract_query_rewrite(retrieval_results)
+        excluded_keywords = merge_excluded_keywords(
+            extract_query_constraints(query).excluded_keywords,
+            ((user_profile or {}).get("constraints") or {}).get("excluded_keywords")
+            if isinstance((user_profile or {}).get("constraints"), dict)
+            else [],
+        )
 
         return EvidencePackage(
             query=query,
@@ -105,7 +112,7 @@ class EvidenceBuilder:
             query_rewrite=query_rewrite,
             evidence_items=items,
             sections=sections,
-            instructions=self._instructions(normalized_task),
+            instructions=self._instructions(normalized_task, excluded_keywords=excluded_keywords),
         )
 
     def _build_item(self, index: int, task_type: str, result: RetrievalResult) -> EvidenceItem:
@@ -212,12 +219,14 @@ class EvidenceBuilder:
             "fallback_reason": metadata.get("rewrite_fallback_reason", ""),
         }
 
-    def _instructions(self, task_type: str) -> List[str]:
+    def _instructions(self, task_type: str, excluded_keywords: Optional[List[str]] = None) -> List[str]:
         common = [
             "只基于 evidence_items 和 sections 中的证据回答。",
             "不要编造价格、评分、证书、授课平台等证据中不存在的信息。",
             "引用资源时优先使用 title 和 source_resource_id。",
         ]
+        if excluded_keywords:
+            common.append("用户明确排除这些方向，不要推荐或主动展开：{0}。".format("、".join(excluded_keywords[:8])))
         by_task = {
             "recommend": [
                 "优先推荐 primary_resources 中的课程。",

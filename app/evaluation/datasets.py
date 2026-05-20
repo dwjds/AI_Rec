@@ -13,6 +13,7 @@ class EvalCase:
     task_type: str = "generic"
     expected_resource_ids: List[str] = field(default_factory=list)
     expected_keywords: List[str] = field(default_factory=list)
+    excluded_keywords: List[str] = field(default_factory=list)
     expected_trace_actions: List[str] = field(default_factory=list)
     expected_handoff_reason: Optional[str] = None
     user_id: str = "eval_user"
@@ -27,9 +28,56 @@ class EvalCase:
             task_type=str(payload.get("task_type") or "generic"),
             expected_resource_ids=[str(item) for item in payload.get("expected_resource_ids") or []],
             expected_keywords=[str(item) for item in payload.get("expected_keywords") or []],
+            excluded_keywords=[str(item) for item in payload.get("excluded_keywords") or []],
             expected_trace_actions=[str(item) for item in payload.get("expected_trace_actions") or []],
             expected_handoff_reason=payload.get("expected_handoff_reason") or None,
             user_id=str(payload.get("user_id") or "eval_user"),
+            session_id=payload.get("session_id") or None,
+            metadata=dict(payload.get("metadata") or {}),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DemoFlowTurn:
+    query: str
+    expected_task_type: str = ""
+    expected_pipeline: str = ""
+    expected_keywords: List[str] = field(default_factory=list)
+    excluded_keywords: List[str] = field(default_factory=list)
+    expected_trace_actions: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "DemoFlowTurn":
+        return cls(
+            query=str(payload.get("query") or ""),
+            expected_task_type=str(payload.get("expected_task_type") or payload.get("task_type") or ""),
+            expected_pipeline=str(payload.get("expected_pipeline") or payload.get("pipeline") or ""),
+            expected_keywords=[str(item) for item in payload.get("expected_keywords") or []],
+            excluded_keywords=[str(item) for item in payload.get("excluded_keywords") or []],
+            expected_trace_actions=[str(item) for item in payload.get("expected_trace_actions") or []],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DemoFlowCase:
+    id: str
+    turns: List[DemoFlowTurn]
+    user_id: str = "demo_eval_user"
+    session_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "DemoFlowCase":
+        return cls(
+            id=str(payload.get("id") or payload.get("case_id") or ""),
+            turns=[DemoFlowTurn.from_dict(item) for item in payload.get("turns") or [] if isinstance(item, dict)],
+            user_id=str(payload.get("user_id") or "demo_eval_user"),
             session_id=payload.get("session_id") or None,
             metadata=dict(payload.get("metadata") or {}),
         )
@@ -57,11 +105,33 @@ def load_eval_cases(path: Path) -> List[EvalCase]:
     return cases
 
 
+def load_demo_flow_cases(path: Path) -> List[DemoFlowCase]:
+    if not path.exists():
+        return []
+    cases: List[DemoFlowCase] = []
+    with path.open("r", encoding="utf-8") as fp:
+        for line_number, line in enumerate(fp, start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            case = DemoFlowCase.from_dict(payload)
+            if case.metadata.get("disabled"):
+                continue
+            if not case.id:
+                case.id = "{0}:{1}".format(path.stem, line_number)
+            if case.turns:
+                cases.append(case)
+    return cases
+
+
 def load_eval_suite(case_dir: Path, suite_names: Iterable[str]) -> Dict[str, List[EvalCase]]:
-    return {
-        suite_name: load_eval_cases(case_dir / "{0}_cases.jsonl".format(suite_name))
-        for suite_name in suite_names
-    }
+    suites: Dict[str, Any] = {}
+    for suite_name in suite_names:
+        if suite_name == "demo_flow":
+            suites[suite_name] = load_demo_flow_cases(case_dir / "demo_flow_cases.jsonl")
+        else:
+            suites[suite_name] = load_eval_cases(case_dir / "{0}_cases.jsonl".format(suite_name))
+    return suites
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:

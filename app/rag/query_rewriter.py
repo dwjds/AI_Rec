@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.core.config import create_llm_client, settings
+from app.rag.query_constraints import extract_query_constraints, strip_negative_constraints
 
 
 ALLOWED_CHUNK_TYPES = {"course", "chapter", "exercise", "knowledge_point"}
@@ -76,13 +77,17 @@ class QueryRewriter:
         return parsed
 
     def _validate_llm_output(self, original_query: str, raw: Dict[str, Any]) -> QueryRewriteResult:
-        rewritten_query = self._clean_text(raw.get("rewritten_query"), max_length=300)
+        rewritten_query = self._clean_text(strip_negative_constraints(raw.get("rewritten_query")), max_length=300)
         if not rewritten_query:
             raise ValueError("rewritten_query is empty.")
 
         search_terms = self._sanitize_string_list(raw.get("search_terms"), max_items=12, max_length=40)
         chunk_types = self._sanitize_chunk_types(raw.get("chunk_types"))
         filters = self._sanitize_filters(raw.get("filters"))
+        constraints = extract_query_constraints(original_query)
+        if constraints.excluded_keywords:
+            filters["excluded_keywords"] = constraints.excluded_keywords
+            search_terms = [term for term in search_terms if term.lower() not in {item.lower() for item in constraints.excluded_keywords}]
         confidence = self._sanitize_confidence(raw.get("confidence"))
 
         if confidence < 0.2:
@@ -99,16 +104,20 @@ class QueryRewriter:
         )
 
     def _rule_rewrite(self, query: str, fallback_reason: str) -> QueryRewriteResult:
-        terms = self._rule_terms(query)
+        constraints = extract_query_constraints(query)
+        positive_query = constraints.positive_query or query
+        terms = self._rule_terms(positive_query)
         chunk_types = self._rule_chunk_types(query)
         expanded_terms = self._expand_terms(terms)
-        rewritten_query = " ".join([query] + expanded_terms)
+        excluded = {item.lower() for item in constraints.excluded_keywords}
+        expanded_terms = [term for term in expanded_terms if term.lower() not in excluded]
+        rewritten_query = " ".join([positive_query] + expanded_terms)
         return QueryRewriteResult(
             original_query=query,
             rewritten_query=self._clean_text(rewritten_query, max_length=300),
             search_terms=expanded_terms[:12],
             chunk_types=chunk_types,
-            filters={},
+            filters={"excluded_keywords": constraints.excluded_keywords} if constraints.excluded_keywords else {},
             confidence=0.45,
             used_llm=False,
             fallback_reason=fallback_reason,

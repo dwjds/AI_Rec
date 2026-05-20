@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -403,7 +404,7 @@ class AgentOrchestrator:
         )
 
     def _run_feedback_adjustment(self, state: AgentState) -> None:
-        target_resource_id = self._infer_feedback_resource_id(state.query, state.user_context)
+        target_resource_id = self._infer_feedback_resource_id(state.query, state)
         if not target_resource_id:
             original = self._decision(state)
             clarification = RoutingDecision(
@@ -482,9 +483,17 @@ class AgentOrchestrator:
         profile = dict(state.user_context.get("profile") or {})
         ranking_context = state.memory_context.get("ranking_context") or {}
         retrieval_context = state.memory_context.get("retriever_prompt_context") or state.memory_context.get("retrieval_context") or {}
+        decision_entities = (state.routing_decision.entities or {}) if state.routing_decision else {}
+        constraints = dict(ranking_context.get("constraints") or profile.get("constraints") or {})
+        excluded_keywords = list(constraints.get("excluded_keywords") or [])
+        for item in decision_entities.get("excluded_keywords") or []:
+            if item and item not in excluded_keywords:
+                excluded_keywords.append(item)
+        if excluded_keywords:
+            constraints["excluded_keywords"] = excluded_keywords
         profile["preferred_resource_types"] = ranking_context.get("preferred_resource_types") or profile.get("preferred_resource_types") or []
         profile["preferred_subjects"] = retrieval_context.get("preferred_subjects") or profile.get("preferred_subjects") or []
-        profile["constraints"] = ranking_context.get("constraints") or profile.get("constraints") or {}
+        profile["constraints"] = constraints
         profile["memory_ranking"] = ranking_context
         profile["memory_retrieval"] = retrieval_context
         return profile
@@ -575,21 +584,62 @@ class AgentOrchestrator:
             if item.chunk_type == "course" and item.source_resource_id
         ]
 
-    def _infer_feedback_resource_id(self, query: str, user_context: Dict[str, Any]) -> str:
+    def _infer_feedback_resource_id(self, query: str, state: AgentState) -> str:
         text = str(query or "")
-        recent = user_context.get("recent_recommendations") or []
-        resource_ids: List[str] = []
-        for event in recent:
-            resource_ids.extend(event.get("recommended_resource_ids") or [])
+        explicit_id = self._extract_resource_id(text)
+        if explicit_id:
+            return explicit_id
+
+        resource_ids = self._last_recommendation_ids(state)
         if not resource_ids:
             return ""
-        if any(word in text for word in ["第一个", "第一门", "1", "一"]):
+        if self._query_mentions_rank(text, 1):
             return str(resource_ids[0])
-        if len(resource_ids) > 1 and any(word in text for word in ["第二个", "第二门", "2", "二"]):
+        if len(resource_ids) > 1 and self._query_mentions_rank(text, 2):
             return str(resource_ids[1])
-        if any(word in text for word in ["这个", "上一个", "刚才", "推荐的"]):
+        if len(resource_ids) > 2 and self._query_mentions_rank(text, 3):
+            return str(resource_ids[2])
+        if any(word in text for word in ["这个", "上一个", "刚才", "推荐的", "刚刚"]):
             return str(resource_ids[0])
         return ""
+
+    def _last_recommendation_ids(self, state: AgentState) -> List[str]:
+        raw_session = (state.memory_context.get("raw_memory") or {}).get("session_memory") or {}
+        session_resource_ids = list(raw_session.get("last_recommendation_ids") or [])
+        if not session_resource_ids:
+            compressed_session = (state.memory_context.get("compressed_raw_memory") or {}).get("session_memory") or {}
+            session_resource_ids = list(compressed_session.get("last_recommendation_ids") or [])
+
+        recent = state.user_context.get("recent_recommendations") or []
+        resource_ids: List[str] = []
+        for resource_id in session_resource_ids:
+            resource_ids.append(str(resource_id))
+        for event in recent:
+            for resource_id in event.get("recommended_resource_ids") or []:
+                resource_ids.append(str(resource_id))
+        return self._dedupe_resource_ids(resource_ids)
+
+    def _extract_resource_id(self, text: str) -> str:
+        match = re.search(r"mooper:(?:course|chapter|exercise|knowledge):[A-Za-z0-9_-]+", text)
+        return match.group(0) if match else ""
+
+    def _query_mentions_rank(self, text: str, rank: int) -> bool:
+        patterns = {
+            1: [r"第\s*一\s*个", r"第\s*1\s*个", r"第\s*一\s*门", r"第\s*1\s*门", r"排第\s*一", r"排名第?\s*一", r"\b1\s*号"],
+            2: [r"第\s*二\s*个", r"第\s*2\s*个", r"第\s*二\s*门", r"第\s*2\s*门", r"排第\s*二", r"排名第?\s*二", r"\b2\s*号"],
+            3: [r"第\s*三\s*个", r"第\s*3\s*个", r"第\s*三\s*门", r"第\s*3\s*门", r"排第\s*三", r"排名第?\s*三", r"\b3\s*号"],
+        }
+        return any(re.search(pattern, text) for pattern in patterns.get(rank, []))
+
+    def _dedupe_resource_ids(self, resource_ids: List[str]) -> List[str]:
+        deduped: List[str] = []
+        seen = set()
+        for resource_id in resource_ids:
+            if not resource_id or resource_id in seen:
+                continue
+            deduped.append(resource_id)
+            seen.add(resource_id)
+        return deduped
 
     def _infer_feedback_type(self, query: str) -> str:
         text = str(query or "")

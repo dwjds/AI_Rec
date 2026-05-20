@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Sequence
 
 
@@ -38,11 +39,61 @@ def keyword_coverage(text: str, expected_keywords: Sequence[str]) -> float:
     return len(hits) / float(len(keywords))
 
 
+def excluded_keyword_violation_rate(text: str, excluded_keywords: Sequence[str]) -> float:
+    keywords = [item for item in excluded_keywords if item]
+    if not keywords:
+        return 0.0
+    lower_text = str(text or "").lower()
+    hits = [keyword for keyword in keywords if keyword.lower() in lower_text]
+    return len(hits) / float(len(keywords))
+
+
 def duplicate_rate(items: Sequence[str]) -> float:
     values = [item for item in items if item]
     if not values:
         return 0.0
     return 1.0 - (len(set(values)) / float(len(values)))
+
+
+def sufficiency_score(count: int, min_count: int = 1) -> float:
+    required = max(1, int(min_count or 1))
+    return min(1.0, max(0, int(count or 0)) / float(required))
+
+
+def top1_keyword_coverage(texts: Sequence[str], expected_keywords: Sequence[str]) -> float:
+    if not texts:
+        return 0.0
+    return keyword_coverage(str(texts[0] or ""), expected_keywords)
+
+
+def answer_evidence_overlap(answer: str, evidence_text: str) -> float:
+    answer_terms = set(_semantic_terms(answer))
+    evidence_terms = set(_semantic_terms(evidence_text))
+    if not answer_terms or not evidence_terms:
+        return 0.0
+    return len(answer_terms & evidence_terms) / float(min(len(answer_terms), len(evidence_terms)))
+
+
+def evidence_title_mention_rate(answer: str, evidence_titles: Sequence[str]) -> float:
+    titles = [str(title).strip() for title in evidence_titles if str(title).strip()]
+    if not titles:
+        return 0.0
+    answer_text = str(answer or "").lower()
+    hits = [title for title in titles if title.lower() in answer_text]
+    return len(hits) / float(len(titles))
+
+
+def unsupported_title_mention_rate(answer: str, evidence_titles: Sequence[str]) -> float:
+    mentioned = _quoted_titles(answer)
+    if not mentioned:
+        return 0.0
+    allowed = [str(title).strip().lower() for title in evidence_titles if str(title).strip()]
+    unsupported = []
+    for title in mentioned:
+        normalized = title.lower()
+        if not any(normalized == item or normalized in item or item in normalized for item in allowed):
+            unsupported.append(title)
+    return len(unsupported) / float(len(mentioned))
 
 
 def trace_action_pass_rate(actual_actions: Sequence[str], expected_actions: Sequence[str]) -> float:
@@ -85,3 +136,28 @@ def summarize_case_metrics(case_results: Sequence[Dict[str, Any]]) -> Dict[str, 
 
 def _action_matches(actual_action: str, expected_action: str) -> bool:
     return actual_action == expected_action or actual_action.endswith(expected_action) or expected_action in actual_action
+
+
+def _semantic_terms(text: str) -> List[str]:
+    value = str(text or "").lower()
+    terms: List[str] = []
+    for item in re.findall(r"[a-z0-9_+#.]{2,}", value):
+        if item not in terms:
+            terms.append(item)
+    for sequence in re.findall(r"[\u4e00-\u9fff]{2,}", value):
+        for size in (2, 3, 4):
+            for index in range(max(0, len(sequence) - size + 1)):
+                term = sequence[index : index + size]
+                if term not in terms:
+                    terms.append(term)
+    return terms[:400]
+
+
+def _quoted_titles(text: str) -> List[str]:
+    titles: List[str] = []
+    for pattern in [r"《([^》]{2,80})》", r"\"([^\"]{2,80})\"", r"'([^']{2,80})'"]:
+        for match in re.finditer(pattern, str(text or "")):
+            title = match.group(1).strip()
+            if title and title not in titles:
+                titles.append(title)
+    return titles

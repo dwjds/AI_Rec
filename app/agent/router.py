@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.core.config import create_llm_client, settings
+from app.rag.query_constraints import extract_query_constraints, merge_excluded_keywords
 
 
 TASK_TYPES = {"qa", "recommend", "learning_path", "diagnosis", "feedback", "chat"}
@@ -234,13 +235,32 @@ class Router:
 
     def _rule_task_type(self, query: str) -> str:
         text = query.lower()
-        if any(word in text for word in ["不喜欢", "不要", "换一个", "换门", "太难", "太简单", "不适合", "反馈"]):
+        has_recommend_intent = any(word in text for word in ["推荐", "课程", "资源", "教程"])
+        if not has_recommend_intent and any(word in text for word in ["不喜欢", "不要", "不需要", "换一个", "换门", "太难", "太简单", "不适合", "反馈"]):
             return "feedback"
         if any(word in text for word in ["学不会", "不会学", "学不下去", "卡住", "薄弱", "诊断", "错题", "困难"]):
             return "diagnosis"
         if any(word in text for word in ["路线", "路径", "规划", "计划", "怎么学", "从零学", "系统学习", "想学", "准备学"]):
             return "learning_path"
         if any(word in text for word in ["推荐", "课程", "资源", "课"]):
+            return "recommend"
+        if any(word in text for word in ["需要", "想要", "偏向", "侧重", "更想", "更需要"]) and any(
+            subject in text
+            for subject in [
+                "人工智能",
+                "机器学习",
+                "深度学习",
+                "python",
+                "java",
+                "c++",
+                "数据库",
+                "数据结构",
+                "程序设计",
+                "算法",
+                "前端",
+                "推荐系统",
+            ]
+        ):
             return "recommend"
         if any(word in text for word in ["是什么", "解释", "概念", "原理", "区别", "为什么", "如何理解"]):
             return "qa"
@@ -267,6 +287,11 @@ class Router:
                 "侧重",
                 "偏向",
                 "更想",
+                "需要",
+                "不需要",
+                "不是",
+                "而不是",
+                "语法",
                 "目标",
                 "竞赛",
                 "就业",
@@ -320,6 +345,10 @@ class Router:
             entities["subjects"] = profile.get("preferred_subjects")
         if not entities.get("learning_stage") and profile.get("learning_stage"):
             entities["learning_stage"] = profile.get("learning_stage")
+        constraints = extract_query_constraints(query)
+        if constraints.excluded_keywords:
+            entities["negative_terms"] = constraints.negative_phrases
+            entities["excluded_keywords"] = constraints.excluded_keywords
         return entities
 
     def _extract_generic_subject(self, query: str) -> str:
@@ -407,6 +436,10 @@ class Router:
 
     def _normalize_entities_for_task(self, entities: Dict[str, Any], query: str) -> Dict[str, Any]:
         normalized = dict(entities or {})
+        constraints = extract_query_constraints(query)
+        if constraints.excluded_keywords:
+            normalized["negative_terms"] = merge_excluded_keywords(normalized.get("negative_terms"), constraints.negative_phrases)
+            normalized["excluded_keywords"] = merge_excluded_keywords(normalized.get("excluded_keywords"), constraints.excluded_keywords)
         if "subject" in normalized and "subjects" not in normalized:
             value = normalized.pop("subject")
             normalized["subjects"] = value if isinstance(value, list) else [str(value)]
@@ -416,6 +449,13 @@ class Router:
         if "subjects" in normalized:
             values = normalized.get("subjects")
             normalized["subjects"] = self._sanitize_string_list(values if isinstance(values, list) else [values], 10, 60)
+            excluded = [item.lower() for item in normalized.get("excluded_keywords") or []]
+            if excluded:
+                normalized["subjects"] = [
+                    subject
+                    for subject in normalized["subjects"]
+                    if not any(keyword and keyword in subject.lower() for keyword in excluded)
+                ]
         if not normalized.get("subjects"):
             rule_entities = self._rule_entities(query, {})
             if rule_entities.get("subjects"):

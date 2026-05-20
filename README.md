@@ -654,24 +654,29 @@ data/eval/
   qa_cases.jsonl
   agent_loop_cases.jsonl
   failure_cases.jsonl
+  demo_flow_cases.jsonl
 ```
 
 评估用例保存在本地 `data/eval/`，默认不随 GitHub 仓库上传。仓库保留评估代码与运行入口，评估数据需要在本地准备或从私有数据目录恢复。
 
 评估维度：
 
-- 检索：Precision@K、Recall@K、MRR、关键词覆盖率、重复率
-- 推荐：推荐命中、关键词覆盖、重复推荐率
-- QA：关键词覆盖、groundedness、usefulness
+- 检索：Precision@K、Recall@K、MRR、关键词覆盖率、Top1 关键词覆盖、结果充分性、重复率、负约束违规率
+- 推荐：推荐命中、关键词覆盖、重复推荐率、证据数量、证据充分性、证据关键词覆盖、回答-证据重合度、未支撑资源标题率
+- QA：关键词覆盖、groundedness、usefulness、证据数量、证据充分性、证据关键词覆盖、回答-证据重合度
 - AgentLoop：trace action 是否按预期执行
 - Failure：handoff reason_code 是否匹配
+- DemoFlow：多轮 demo 流程是否保持同一 session、每轮 pipeline 是否符合预期、反馈/负约束是否能延续到后续轮次
 
 评估报告输出：
 
 ```text
 data/eval_reports/latest_eval.json
 data/eval_reports/latest_eval.md
+data/eval_reports/eval_checkpoint.json
 ```
+
+`run_eval.py` 支持断点续跑。每完成一个 case 会写入 checkpoint；如果评估中断，下一次加 `--resume` 会跳过已完成 case，只继续未完成部分。若评估配置或 suite 改变，旧 checkpoint 不会被复用。
 
 ## 本地运行准备
 
@@ -762,6 +767,30 @@ python scripts/run_retrieval_cases.py --top-k 5
 ```powershell
 python scripts/run_eval.py --suites retrieval,recommendation,qa,agent_loop --top-k 5
 python scripts/run_eval.py --suites agent_loop --json
+```
+
+离线评估默认启用 LLM Router；如果要测试纯规则兜底路由，可以加：
+
+```powershell
+python scripts/run_eval.py --suites demo_flow --top-k 5 --no-llm-route --reset-checkpoint
+```
+
+完整 demo 流程评估：
+
+```powershell
+python scripts/run_eval.py --suites demo_flow --top-k 5 --reset-checkpoint
+```
+
+断点续跑：
+
+```powershell
+python scripts/run_eval.py --suites retrieval,recommendation,qa,agent_loop --top-k 5 --resume
+```
+
+重新开始一次评估：
+
+```powershell
+python scripts/run_eval.py --suites retrieval,recommendation,qa,agent_loop --top-k 5 --reset-checkpoint
 ```
 
 ## 关键配置

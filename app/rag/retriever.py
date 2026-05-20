@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.core.config import settings
+from app.rag.query_constraints import contains_excluded_keyword, extract_query_constraints, merge_excluded_keywords, strip_negative_constraints
 from app.rag.query_rewriter import QueryRewriteResult, QueryRewriter
 from app.rag.reranker import HybridReranker, RerankContext, extract_query_terms, keyword_score
 from app.rag.vector_store import ChromaVectorStore
@@ -72,8 +73,14 @@ class RagRetriever:
         rule_top_k: int = 20,
     ) -> List[RetrievalResult]:
         rewrite = self.query_rewriter.rewrite(query, use_llm=use_llm_rewrite) if use_query_rewrite else None
-        retrieval_query = rewrite.rewritten_query if rewrite else query
+        query_constraints = extract_query_constraints(query)
+        retrieval_query = strip_negative_constraints(rewrite.rewritten_query if rewrite else query) or query_constraints.positive_query or query
         retrieval_chunk_types = list(chunk_types or (rewrite.chunk_types if rewrite else [])) or None
+        excluded_keywords = merge_excluded_keywords(
+            query_constraints.excluded_keywords,
+            (rewrite.filters or {}).get("excluded_keywords") if rewrite else [],
+            self._profile_excluded_keywords(user_profile or {}),
+        )
         candidate_limit = candidate_k or max(top_k * 10, top_k)
         vector_error = ""
         try:
@@ -91,7 +98,7 @@ class RagRetriever:
             chunk_types=retrieval_chunk_types,
             limit=candidate_limit,
         )
-        candidates = self._merge_candidates(vector_results, keyword_results)
+        candidates = self._filter_excluded(self._merge_candidates(vector_results, keyword_results), excluded_keywords)
         if vector_error:
             for item in candidates:
                 item.metadata["vector_fallback_reason"] = vector_error
@@ -105,6 +112,7 @@ class RagRetriever:
                 top_k=top_k,
                 rule_top_k=rule_top_k,
                 use_llm_rerank=use_llm_rerank,
+                excluded_keywords=excluded_keywords,
             ),
         )
         self._attach_rewrite_info(reranked, rewrite)
@@ -231,3 +239,35 @@ class RagRetriever:
             }
         )
         return metadata
+
+    def _filter_excluded(self, candidates: List[RetrievalResult], excluded_keywords: List[str]) -> List[RetrievalResult]:
+        if not excluded_keywords:
+            return candidates
+        filtered: List[RetrievalResult] = []
+        for item in candidates:
+            text = " ".join(
+                [
+                    item.title,
+                    item.content,
+                    " ".join(str(value) for value in item.metadata.values()),
+                ]
+            )
+            if contains_excluded_keyword(text, excluded_keywords):
+                item.metadata["filtered_reason"] = "excluded_keywords"
+                item.metadata["excluded_keywords"] = "|".join(excluded_keywords)
+                continue
+            filtered.append(item)
+        return filtered
+
+    def _profile_excluded_keywords(self, user_profile: Dict[str, Any]) -> List[str]:
+        constraints = user_profile.get("constraints") if isinstance(user_profile.get("constraints"), dict) else {}
+        memory_ranking = user_profile.get("memory_ranking") if isinstance(user_profile.get("memory_ranking"), dict) else {}
+        memory_constraints = memory_ranking.get("constraints") if isinstance(memory_ranking.get("constraints"), dict) else {}
+        memory_retrieval = user_profile.get("memory_retrieval") if isinstance(user_profile.get("memory_retrieval"), dict) else {}
+        return merge_excluded_keywords(
+            constraints.get("excluded_keywords"),
+            memory_constraints.get("excluded_keywords"),
+            memory_retrieval.get("excluded_keywords"),
+            memory_ranking.get("negative_terms"),
+            memory_ranking.get("penalize_keywords"),
+        )

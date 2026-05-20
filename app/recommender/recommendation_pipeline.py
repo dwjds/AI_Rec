@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.agent.state import AgentState
+from app.rag.query_constraints import extract_query_constraints, merge_excluded_keywords
 from app.recommender.filters import ResourceFilter
 from app.recommender.ranker import RecommendationCandidate, RecommendationRanker, ScoredRecommendation
 from app.stores.resource_store import ResourceStore
@@ -57,7 +58,21 @@ class RecommendationPipeline:
         ranking_context = dict(state.memory_context.get("ranking_context") or {})
         retrieval_context = dict(state.memory_context.get("retrieval_context") or {})
         ranking_context.setdefault("preferred_subjects", retrieval_context.get("preferred_subjects") or [])
-        focus_terms = self._focus_terms(state.query)
+        query_constraints = extract_query_constraints(state.query)
+        entity_constraints = (state.routing_decision.entities or {}) if state.routing_decision else {}
+        negative_terms = merge_excluded_keywords(
+            query_constraints.excluded_keywords,
+            entity_constraints.get("excluded_keywords"),
+            entity_constraints.get("negative_terms"),
+        )
+        if negative_terms:
+            constraints = dict(ranking_context.get("constraints") or {})
+            constraints["excluded_keywords"] = merge_excluded_keywords(constraints.get("excluded_keywords"), negative_terms)
+            ranking_context["constraints"] = constraints
+            ranking_context["penalize_keywords"] = merge_excluded_keywords(ranking_context.get("penalize_keywords"), negative_terms)
+            ranking_context["negative_terms"] = negative_terms
+
+        focus_terms = self._focus_terms(query_constraints.positive_query or state.query, negative_terms=negative_terms)
         if focus_terms:
             existing_required = [str(item).strip() for item in (ranking_context.get("required_keywords") or []) if str(item).strip()]
             ranking_context["required_keywords"] = existing_required or focus_terms
@@ -122,11 +137,16 @@ class RecommendationPipeline:
         return candidates
 
     def _candidates_from_db(self, state: AgentState, limit: int) -> List[RecommendationCandidate]:
-        queries = [state.query]
+        base_query = extract_query_constraints(state.query).positive_query or state.query
+        queries = [base_query]
         retrieval_context = state.memory_context.get("retrieval_context") or {}
         for subject in retrieval_context.get("preferred_subjects") or []:
             if subject and subject not in queries:
                 queries.append(str(subject))
+        if state.routing_decision:
+            for subject in (state.routing_decision.entities or {}).get("subjects") or []:
+                if subject and subject not in queries:
+                    queries.append(str(subject))
 
         candidates: List[RecommendationCandidate] = []
         expanded_queries = []
@@ -169,7 +189,7 @@ class RecommendationPipeline:
         return RecommendationCandidate(
             resource_id=str(course.get("id") or ""),
             resource_type="course",
-            title=str(course.get("title") or ""),
+            title=self._clean_title(course.get("title")),
             description=str(course.get("description") or course.get("learning_notes") or ""),
             knowledge_points=self._knowledge_points(course.get("knowledge_points") or []),
             chapters=list(course.get("chapters") or []),
@@ -184,7 +204,7 @@ class RecommendationPipeline:
         return RecommendationCandidate(
             resource_id=str(resource.get("id") or ""),
             resource_type=str(resource.get("resource_type") or resource.get("entity_type") or ""),
-            title=str(resource.get("title") or ""),
+            title=self._clean_title(resource.get("title")),
             description=str(resource.get("description") or resource.get("learning_notes") or ""),
             knowledge_points=[],
             chapters=[],
@@ -239,6 +259,9 @@ class RecommendationPipeline:
         except ValueError:
             return 0
 
+    def _clean_title(self, value: Any) -> str:
+        return str(value or "").replace("\ufeff", "").strip()
+
     def _query_variants(self, query: str) -> List[str]:
         text = str(query or "").strip()
         variants = [text] if text else []
@@ -246,15 +269,16 @@ class RecommendationPipeline:
             if term not in variants:
                 variants.append(term)
         compact = text
-        for word in ["推荐", "有关", "相关", "课程", "资源", "学习", "入门", "进阶", "的", "一下", "帮我"]:
+        for word in ["推荐", "有关", "相关", "课程", "教程", "资源", "学习路线", "路线", "路径", "学习", "入门", "进阶", "的", "一下", "帮我"]:
             compact = compact.replace(word, "")
         compact = compact.strip()
         if compact and compact not in variants:
             variants.append(compact)
         return variants[:6]
 
-    def _focus_terms(self, query: str) -> List[str]:
+    def _focus_terms(self, query: str, negative_terms: Optional[List[str]] = None) -> List[str]:
         text = str(query or "")
+        negatives = {term.lower() for term in (negative_terms if negative_terms is not None else self._negative_terms(text))}
         known_terms = [
             "强化学习",
             "机器学习",
@@ -271,10 +295,13 @@ class RecommendationPipeline:
             "Java",
             "数据库",
         ]
-        hits = [term for term in known_terms if term.lower() in text.lower()]
+        hits = [term for term in known_terms if term.lower() in text.lower() and term.lower() not in negatives]
         if hits:
             return hits[:4]
         cleaned = text
-        for word in ["推荐", "有关", "相关", "课程", "资源", "学习", "入门", "进阶", "的", "一下", "帮我"]:
+        for word in ["推荐", "有关", "相关", "课程", "教程", "资源", "学习路线", "路线", "路径", "学习", "入门", "进阶", "的", "一下", "帮我"]:
             cleaned = cleaned.replace(word, " ")
         return [item.strip() for item in cleaned.replace("，", " ").replace(",", " ").split() if len(item.strip()) >= 2][:3]
+
+    def _negative_terms(self, query: str) -> List[str]:
+        return extract_query_constraints(query).excluded_keywords

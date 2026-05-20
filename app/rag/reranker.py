@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from app.core.config import create_llm_client, settings
+from app.rag.query_constraints import contains_excluded_keyword, extract_query_constraints, merge_excluded_keywords
 
 
 DEFAULT_TASK_TYPE = "generic"
@@ -55,6 +56,7 @@ class RerankContext:
     top_k: int = 5
     rule_top_k: int = 20
     use_llm_rerank: bool = True
+    excluded_keywords: List[str] = field(default_factory=list)
 
 
 class RuleBasedReranker:
@@ -68,8 +70,27 @@ class RuleBasedReranker:
     ) -> List[Any]:
         merged = self._dedupe_by_id(candidates)
         scored: List[Any] = []
-        terms = extract_query_terms(context.query)
+        constraints = extract_query_constraints(context.query)
+        excluded_keywords = merge_excluded_keywords(
+            context.excluded_keywords,
+            constraints.excluded_keywords,
+            _profile_excluded_keywords(context.user_profile),
+        )
+        terms = [
+            term
+            for term in extract_query_terms(constraints.positive_query or context.query)
+            if term.lower() not in {keyword.lower() for keyword in excluded_keywords}
+        ]
         for item in merged:
+            if contains_excluded_keyword(_candidate_text(item), excluded_keywords):
+                self._metadata(item).update(
+                    {
+                        "rerank_stage": "rule_filtered",
+                        "filtered_reason": "excluded_keywords",
+                        "excluded_keywords": excluded_keywords,
+                    }
+                )
+                continue
             if not self._allowed_by_profile(item, context.user_profile):
                 continue
             components = self._score_components(item, terms, context)
@@ -215,6 +236,11 @@ class LLMReranker:
             "task_type": context.task_type,
             "user_profile": self._compact_dict(context.user_profile, max_items=12),
             "knowledge_state": context.knowledge_state[:20],
+            "excluded_keywords": merge_excluded_keywords(
+                context.excluded_keywords,
+                extract_query_constraints(context.query).excluded_keywords,
+                _profile_excluded_keywords(context.user_profile),
+            ),
             "candidates": [self._candidate_summary(item) for item in candidates],
         }
         messages = [
@@ -289,6 +315,7 @@ class LLMReranker:
         return (
             "你是 MOOC RAG 系统的候选资源精排器。"
             "请根据用户问题、任务类型、用户画像、知识状态和候选资源摘要，对候选资源排序。"
+            "如果输入包含 excluded_keywords，不能把包含这些负约束关键词的候选排在前面。"
             "只能输出 JSON object，格式为："
             "{\"ranked_candidate_ids\":[\"候选ID\"],\"reason\":\"简短排序依据\"}。"
             "ranked_candidate_ids 只能使用输入 candidates 中出现的 candidate_id，不能编造新 ID。"
@@ -410,6 +437,20 @@ def _as_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     return [item.strip() for item in str(value).replace("|", ",").split(",") if item.strip()]
+
+
+def _profile_excluded_keywords(user_profile: Dict[str, Any]) -> List[str]:
+    if not isinstance(user_profile, dict):
+        return []
+    constraints = user_profile.get("constraints") if isinstance(user_profile.get("constraints"), dict) else {}
+    memory_ranking = user_profile.get("memory_ranking") if isinstance(user_profile.get("memory_ranking"), dict) else {}
+    memory_constraints = memory_ranking.get("constraints") if isinstance(memory_ranking.get("constraints"), dict) else {}
+    return merge_excluded_keywords(
+        constraints.get("excluded_keywords"),
+        memory_constraints.get("excluded_keywords"),
+        memory_ranking.get("negative_terms"),
+        memory_ranking.get("penalize_keywords"),
+    )
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

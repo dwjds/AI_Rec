@@ -43,6 +43,8 @@ class ContextBuilder:
             "known_subjects": routing_context.get("known_subjects") or user.get("preferred_subjects") or [],
             "known_learning_stage": routing_context.get("known_learning_stage") or user.get("learning_stage") or "",
             "known_goal": routing_context.get("known_goal") or "",
+            "negative_terms": routing_context.get("negative_terms") or [],
+            "excluded_keywords": routing_context.get("excluded_keywords") or [],
         }
         return self.compressor.compress_context(context)
 
@@ -55,6 +57,9 @@ class ContextBuilder:
         knowledge = raw_memory.get("knowledge_state") or {}
         context = {
             "query": query,
+            "positive_query": retrieval_context.get("positive_query") or query,
+            "negative_terms": retrieval_context.get("negative_terms") or [],
+            "excluded_keywords": retrieval_context.get("excluded_keywords") or [],
             "preferred_subjects": retrieval_context.get("preferred_subjects") or [],
             "learning_goal": retrieval_context.get("learning_goal") or "",
             "weak_knowledge_points": retrieval_context.get("weak_knowledge_points") or knowledge.get("weak_points") or [],
@@ -80,6 +85,7 @@ class ContextBuilder:
             "strong_points": planning_context.get("strong_points") or [],
             "recent_learning_history": planning_context.get("recent_learning_history") or [],
             "constraints": planning_context.get("constraints") or {},
+            "negative_terms": planning_context.get("negative_terms") or [],
             "recent_turns": session.get("turns") or [],
             "turn_summary": session.get("turn_summary") or "",
             "recent_feedback_summary": feedback.get("recent_feedback_summary") or "",
@@ -103,5 +109,7 @@ class ContextBuilder:
             "do_not_repeat_resource_ids": generation_context.get("do_not_repeat_resource_ids") or [],
             "clarification_history": generation_context.get("clarification_history") or {},
             "recent_feedback_summary": generation_context.get("recent_feedback_summary") or "",
+            "negative_terms": generation_context.get("negative_terms") or [],
+            "excluded_keywords": generation_context.get("excluded_keywords") or [],
         }
         return self.compressor.compress_context(context)
