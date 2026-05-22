@@ -66,6 +66,25 @@ def top1_keyword_coverage(texts: Sequence[str], expected_keywords: Sequence[str]
     return keyword_coverage(str(texts[0] or ""), expected_keywords)
 
 
+def keyword_precision_at_k(texts: Sequence[str], expected_keywords: Sequence[str], k: int) -> float:
+    keywords = [item for item in expected_keywords if item]
+    if not texts or not keywords or k <= 0:
+        return 0.0
+    top = list(texts)[:k]
+    hits = [text for text in top if keyword_coverage(str(text or ""), keywords) > 0.0]
+    return len(hits) / float(len(top))
+
+
+def keyword_reciprocal_rank(texts: Sequence[str], expected_keywords: Sequence[str]) -> float:
+    keywords = [item for item in expected_keywords if item]
+    if not texts or not keywords:
+        return 0.0
+    for index, text in enumerate(texts, start=1):
+        if keyword_coverage(str(text or ""), keywords) > 0.0:
+            return 1.0 / float(index)
+    return 0.0
+
+
 def answer_evidence_overlap(answer: str, evidence_text: str) -> float:
     answer_terms = set(_semantic_terms(answer))
     evidence_terms = set(_semantic_terms(evidence_text))
@@ -121,16 +140,22 @@ def average(values: Sequence[float]) -> float:
     return sum(values) / float(len(values)) if values else 0.0
 
 
-def summarize_case_metrics(case_results: Sequence[Dict[str, Any]]) -> Dict[str, float]:
+def summarize_case_metrics(case_results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     if not case_results:
         return {"case_count": 0.0}
     metric_keys = set()
     for result in case_results:
         metric_keys.update((result.get("metrics") or {}).keys())
-    summary: Dict[str, float] = {"case_count": float(len(case_results))}
+    summary: Dict[str, Any] = {"case_count": float(len(case_results))}
     for key in sorted(metric_keys):
-        values = [float((result.get("metrics") or {}).get(key) or 0.0) for result in case_results]
-        summary[key] = average(values)
+        values = [
+            float((result.get("metrics") or {}).get(key))
+            for result in case_results
+            if (result.get("metrics") or {}).get(key) is not None
+        ]
+        if values:
+            summary[key] = average(values)
+            summary["{0}_case_count".format(key)] = float(len(values))
     return summary
 
 

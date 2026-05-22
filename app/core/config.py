@@ -105,7 +105,7 @@ def get_settings() -> Settings:
         chroma_collection=os.environ.get("CHROMA_COLLECTION", "mooc_resource_chunks"),
         llm_api_key=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY"),
         llm_base_url=os.environ.get("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        llm_model=os.environ.get("LLM_MODEL", "qwen-plus-1220"),
+        llm_model=os.environ.get("LLM_MODEL", "qwen-plus-0112"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-v4"),
         agent_max_iterations=_env_int("AGENT_MAX_ITERATIONS", 6),
         agent_loop_timeout_seconds=_env_float("AGENT_LOOP_TIMEOUT_SECONDS", 600.0),

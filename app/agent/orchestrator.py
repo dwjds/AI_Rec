@@ -212,12 +212,13 @@ class AgentOrchestrator:
             use_llm=use_llm_route,
         )
         state.set_routing_decision(decision)
+        self._make_clarification_non_blocking(state)
         state.set_trace_run_id(self._start_trace(state))
         set_log_context(trace_run_id=state.trace_run_id, pipeline=decision.pipeline)
         logger.info("agent request routed")
 
         try:
-            if decision.needs_clarification:
+            if self._should_block_for_clarification(decision):
                 self._run_clarification(state)
             elif decision.pipeline == "rag_qa":
                 self._run_rag(state, top_k=top_k, use_llm_rerank=use_llm_rerank)
@@ -237,6 +238,7 @@ class AgentOrchestrator:
 
             if "response_generation" not in state.metadata and not state.handoff_case:
                 self.response_generator.generate(state, use_llm=use_llm_generation)
+            self._append_non_blocking_clarification(state)
         except Exception as exc:
             logger.exception("agent pipeline failed")
             self._run_exception_handoff(state, exc)
@@ -454,14 +456,68 @@ class AgentOrchestrator:
         state.add_step("direct_chat", {"query": state.query}, {"answer": answer})
         self._add_trace_step(state, 1, "direct_chat", {"query": state.query}, {"answer": answer})
 
+    def _should_block_for_clarification(self, decision: RoutingDecision) -> bool:
+        if not decision.needs_clarification:
+            return False
+        return decision.task_type not in {"qa", "recommend", "learning_path", "diagnosis"}
+
+    def _make_clarification_non_blocking(self, state: AgentState) -> None:
+        decision = self._decision(state)
+        if self._should_block_for_clarification(decision):
+            return
+        if not decision.needs_clarification:
+            return
+        questions = [question for question in decision.clarification_questions if question][:3]
+        state.add_metadata(
+            "non_blocking_clarification",
+            {
+                "questions": questions,
+                "original_information_sufficient": decision.information_sufficient,
+                "original_needs_clarification": True,
+            },
+        )
+        decision.needs_clarification = False
+        decision.information_sufficient = True
+
+    def _append_non_blocking_clarification(self, state: AgentState) -> None:
+        decision = self._decision(state)
+        if self._should_block_for_clarification(decision):
+            return
+        non_blocking = state.metadata.get("non_blocking_clarification") or {}
+        questions = list(non_blocking.get("questions") or [])
+        if not questions:
+            questions = list(decision.clarification_questions or [])
+        if not questions:
+            return
+        if not state.final_answer:
+            return
+        marker = "如果你想让我进一步"
+        if marker in state.final_answer:
+            return
+        questions = [question for question in questions if question][:3]
+        if not questions:
+            return
+        lines = [
+            state.final_answer.rstrip(),
+            "",
+            "如果你想让我进一步个性化，可以再补充：",
+        ]
+        lines.extend("{0}. {1}".format(index, question) for index, question in enumerate(questions, start=1))
+        state.set_final_answer("\n".join(lines))
+        state.add_metadata(
+            "non_blocking_clarification",
+            {**non_blocking, "questions": questions, "appended_after_answer": True},
+        )
+
     def _result_from_state(self, state: AgentState) -> OrchestratorResult:
         decision = self._decision(state)
+        pipeline = "clarification" if self._should_block_for_clarification(decision) else decision.pipeline
         return OrchestratorResult(
             user_id=state.user_id,
             query=state.query,
             routing_decision=decision,
             answer=state.final_answer,
-            pipeline="clarification" if decision.needs_clarification else decision.pipeline,
+            pipeline=pipeline,
             user_context=state.user_context,
             evidence_package=state.evidence_package,
             retrieval_results=state.retrieval_results,

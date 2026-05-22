@@ -28,11 +28,25 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--use-llm-route", dest="use_llm_route", action="store_true", default=True, help="Enable LLM router. Enabled by default.")
     parser.add_argument("--no-llm-route", dest="use_llm_route", action="store_false", help="Disable LLM router and use rule fallback.")
-    parser.add_argument("--use-llm-rerank", action="store_true")
+    parser.add_argument(
+        "--use-llm-rerank",
+        dest="use_llm_rerank",
+        action="store_true",
+        default=True,
+        help="Enable LLM reranker. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-llm-rerank",
+        dest="use_llm_rerank",
+        action="store_false",
+        help="Disable LLM reranker and use rule-based rerank only.",
+    )
     parser.add_argument("--use-llm-generation", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Resume from the checkpoint file and skip completed cases.")
     parser.add_argument("--reset-checkpoint", action="store_true", help="Delete the checkpoint before running.")
+    parser.add_argument("--retry-failed", action="store_true", help="When resuming, remove failed cached cases and run them again.")
     parser.add_argument("--no-checkpoint", action="store_true", help="Disable per-case checkpoint writes.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable evaluation progress display.")
     parser.add_argument("--checkpoint-path", default="", help="Checkpoint path. Defaults to <output-dir>/eval_checkpoint.json.")
     parser.add_argument("--json", action="store_true", help="Print full JSON report.")
     args = parser.parse_args()
@@ -50,6 +64,7 @@ def main() -> None:
         use_llm_route=args.use_llm_route,
         use_llm_rerank=args.use_llm_rerank,
         use_llm_generation=args.use_llm_generation,
+        show_progress=not args.no_progress,
     )
     checkpoint = None
     if not args.no_checkpoint:
@@ -61,6 +76,10 @@ def main() -> None:
         )
         if args.reset_checkpoint:
             checkpoint.clear()
+        if args.retry_failed:
+            removed = checkpoint.remove_failed(suites)
+            if removed:
+                print("Removed {0} failed cached case(s) from checkpoint.".format(removed), file=sys.stderr)
         checkpoint.save()
 
     runner = EvaluationRunner(config=config, checkpoint=checkpoint)

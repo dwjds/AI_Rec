@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, TypeVar
 
 from app.agent.orchestrator import AgentOrchestrator
 from app.evaluation.checkpoint import EvaluationCheckpoint
@@ -12,6 +13,8 @@ from app.evaluation.metrics import (
     duplicate_rate,
     evidence_title_mention_rate,
     excluded_keyword_violation_rate,
+    keyword_precision_at_k,
+    keyword_reciprocal_rank,
     keyword_coverage,
     precision_at_k,
     recall_at_k,
@@ -31,6 +34,10 @@ class EvaluationConfig:
     use_llm_route: bool = True
     use_llm_rerank: bool = True
     use_llm_generation: bool = False
+    show_progress: bool = True
+
+
+T = TypeVar("T")
 
 
 class EvaluationRunner:
@@ -75,7 +82,7 @@ class EvaluationRunner:
 
     def evaluate_retrieval(self, cases: Sequence[EvalCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("retrieval", cases):
             cached = self._checkpoint_get("retrieval", case)
             if cached is not None:
                 results.append(cached)
@@ -90,13 +97,15 @@ class EvaluationRunner:
             ids = [self._resource_id(item.to_dict()) for item in retrieved]
             result_texts = [item.title + " " + item.content for item in retrieved]
             text = " ".join(result_texts)
+            id_metrics = self._id_metrics(ids, case)
             metrics = {
                 "result_count": float(len(retrieved)),
                 "retrieval_sufficiency": sufficiency_score(len(retrieved), self._min_evidence_count(case)),
-                "precision_at_k": precision_at_k(ids, case.expected_resource_ids, self.config.top_k),
-                "recall_at_k": recall_at_k(ids, case.expected_resource_ids, self.config.top_k),
-                "mrr": reciprocal_rank(ids, case.expected_resource_ids),
+                **id_metrics,
                 "keyword_coverage": keyword_coverage(text, case.expected_keywords),
+                "content_keyword_coverage": keyword_coverage(text, case.expected_keywords),
+                "keyword_precision_at_k": keyword_precision_at_k(result_texts, case.expected_keywords, self.config.top_k),
+                "keyword_mrr": keyword_reciprocal_rank(result_texts, case.expected_keywords),
                 "top1_keyword_coverage": top1_keyword_coverage(result_texts, case.expected_keywords),
                 "excluded_keyword_violation_rate": excluded_keyword_violation_rate(text, case.excluded_keywords),
                 "duplicate_rate": duplicate_rate(ids),
@@ -113,7 +122,7 @@ class EvaluationRunner:
 
     def evaluate_recommendation(self, cases: Sequence[EvalCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("recommendation", cases):
             cached = self._checkpoint_get("recommendation", case)
             if cached is not None:
                 results.append(cached)
@@ -122,18 +131,23 @@ class EvaluationRunner:
             package = ((result.state.metadata if result.state else {}).get("recommendation_package") or {})
             recommendations = package.get("recommendations") or []
             ids = [
-                str((item.get("candidate") or {}).get("resource_id") or "")
+                str(item.get("resource_id") or (item.get("candidate") or {}).get("resource_id") or "")
                 for item in recommendations
             ]
-            text = result.answer + " " + " ".join(str((item.get("candidate") or {}).get("title") or "") for item in recommendations)
+            recommendation_texts = [self._recommendation_text(item) for item in recommendations]
+            text = result.answer + " " + " ".join(recommendation_texts)
             evidence_items = result.evidence_package.evidence_items if result.evidence_package else []
             evidence_text = self._evidence_text(evidence_items)
             evidence_titles = self._evidence_titles(evidence_items)
+            id_metrics = self._id_metrics(ids, case)
             metrics = {
-                "precision_at_k": precision_at_k(ids, case.expected_resource_ids, self.config.top_k),
-                "recall_at_k": recall_at_k(ids, case.expected_resource_ids, self.config.top_k),
-                "mrr": reciprocal_rank(ids, case.expected_resource_ids),
+                **id_metrics,
                 "keyword_coverage": keyword_coverage(text, case.expected_keywords),
+                "recommendation_keyword_coverage": keyword_coverage(" ".join(recommendation_texts), case.expected_keywords),
+                "recommendation_keyword_precision_at_k": keyword_precision_at_k(
+                    recommendation_texts, case.expected_keywords, self.config.top_k
+                ),
+                "recommendation_keyword_mrr": keyword_reciprocal_rank(recommendation_texts, case.expected_keywords),
                 "excluded_keyword_violation_rate": excluded_keyword_violation_rate(text, case.excluded_keywords),
                 "duplicate_rate": duplicate_rate(ids),
                 "evidence_count": float(len(evidence_items)),
@@ -157,7 +171,7 @@ class EvaluationRunner:
 
     def evaluate_qa(self, cases: Sequence[EvalCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("qa", cases):
             cached = self._checkpoint_get("qa", case)
             if cached is not None:
                 results.append(cached)
@@ -184,7 +198,9 @@ class EvaluationRunner:
                 "answer": result.answer,
                 "judge": judge_result.to_dict(),
                 "metrics": metrics,
-                "passed": self._case_passed(metrics, case),
+                "passed": result.pipeline == "rag_qa"
+                and metrics.get("evidence_sufficiency", 0.0) >= 1.0
+                and self._case_passed(metrics, case),
             }
             self._checkpoint_set("qa", case, case_result)
             results.append(case_result)
@@ -192,7 +208,7 @@ class EvaluationRunner:
 
     def evaluate_agent_loop(self, cases: Sequence[EvalCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("agent_loop", cases):
             cached = self._checkpoint_get("agent_loop", case)
             if cached is not None:
                 results.append(cached)
@@ -219,7 +235,7 @@ class EvaluationRunner:
 
     def evaluate_failure_guard(self, cases: Sequence[EvalCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("failure", cases):
             cached = self._checkpoint_get("failure", case)
             if cached is not None:
                 results.append(cached)
@@ -249,7 +265,7 @@ class EvaluationRunner:
 
     def evaluate_demo_flow(self, cases: Sequence[DemoFlowCase]) -> Dict[str, Any]:
         results = []
-        for case in cases:
+        for case in self._iter_cases("demo_flow", cases):
             cached = self._checkpoint_get("demo_flow", case)  # type: ignore[arg-type]
             if cached is not None:
                 results.append(cached)
@@ -324,9 +340,47 @@ class EvaluationRunner:
             top_k=self.config.top_k,
         )
 
+    def _iter_cases(self, suite_name: str, cases: Sequence[T]) -> Iterator[T]:
+        if not self.config.show_progress:
+            yield from cases
+            return
+
+        try:
+            from tqdm import tqdm  # type: ignore
+
+            yield from tqdm(
+                cases,
+                desc="eval:{0}".format(suite_name),
+                unit="case",
+                ncols=100,
+                file=sys.stderr,
+            )
+            return
+        except Exception:
+            total = len(cases)
+            for index, case in enumerate(cases, start=1):
+                case_id = str(getattr(case, "id", index))
+                print("[eval:{0}] {1}/{2} {3}".format(suite_name, index, total, case_id), file=sys.stderr, flush=True)
+                yield case
+
     def _resource_id(self, result: Dict[str, Any]) -> str:
         metadata = result.get("metadata") or {}
         return str(metadata.get("source_resource_id") or result.get("chunk_id") or "")
+
+    def _id_metrics(self, ids: Sequence[str], case: EvalCase) -> Dict[str, Any]:
+        if not case.expected_resource_ids:
+            return {
+                "precision_at_k": None,
+                "recall_at_k": None,
+                "mrr": None,
+                "id_ground_truth_available": 0.0,
+            }
+        return {
+            "precision_at_k": precision_at_k(ids, case.expected_resource_ids, self.config.top_k),
+            "recall_at_k": recall_at_k(ids, case.expected_resource_ids, self.config.top_k),
+            "mrr": reciprocal_rank(ids, case.expected_resource_ids),
+            "id_ground_truth_available": 1.0,
+        }
 
     def _trace_actions(self, state_payload: Dict[str, Any]) -> List[str]:
         metadata = state_payload.get("metadata") or {}
@@ -383,6 +437,34 @@ class EvaluationRunner:
 
     def _evidence_titles(self, evidence_items: Sequence[Any]) -> List[str]:
         return [str(getattr(item, "title", "") or "") for item in evidence_items if str(getattr(item, "title", "") or "")]
+
+    def _recommendation_text(self, item: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        candidate = item.get("candidate") or {}
+        for source in [item, candidate]:
+            if not isinstance(source, dict):
+                continue
+            for key in [
+                "title",
+                "resource_type",
+                "difficulty",
+                "subject",
+                "sub_subject",
+                "description",
+                "summary",
+                "recommendation_reason",
+                "reason",
+            ]:
+                value = source.get(key)
+                if value is not None:
+                    parts.append(str(value))
+            for key in ["knowledge_points", "matched_knowledge_points", "reasons"]:
+                value = source.get(key)
+                if isinstance(value, list):
+                    parts.extend(str(item) for item in value if item)
+                elif value:
+                    parts.append(str(value))
+        return " ".join(parts)
 
     def _checkpoint_get(self, suite_name: str, case: EvalCase) -> Optional[Dict[str, Any]]:
         if self.checkpoint is None:

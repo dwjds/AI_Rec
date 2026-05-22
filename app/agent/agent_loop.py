@@ -97,9 +97,7 @@ class RuleBasedActionPlanner:
             return AgentAction("finish")
         if not state.metadata.get("memory_observed"):
             return AgentAction("read_memory")
-        if state.routing_decision and state.routing_decision.needs_clarification:
-            return AgentAction("ask_clarification")
-        if state.metadata.get("needs_clarification"):
+        if state.metadata.get("needs_clarification") and not self._has_partial_result(state):
             return AgentAction("ask_clarification")
         if not state.metadata.get("tool_search_courses_observed"):
             return AgentAction("search_courses", {"query": state.query})
@@ -114,6 +112,9 @@ class RuleBasedActionPlanner:
         if not state.final_answer:
             return AgentAction("generate_response")
         return AgentAction("finish")
+
+    def _has_partial_result(self, state: AgentState) -> bool:
+        return bool(state.evidence_package or state.plan or state.metadata.get("learning_path_plan") or state.metadata.get("diagnosis_plan"))
 
 
 class ObservationChecker:
@@ -134,7 +135,7 @@ class ObservationChecker:
             passed = int(output.get("evidence_count") or 0) >= 1
         elif action.name == "run_learning_path_planner":
             expected = {"stage_count": ">=1", "needs_more_info": False}
-            passed = int(output.get("stage_count") or 0) >= 1 and not bool(output.get("needs_more_info"))
+            passed = int(output.get("stage_count") or 0) >= 1
         elif action.name == "run_diagnosis_planner":
             expected = {"diagnosis_type": "not_unknown_or_has_remedial_plan"}
             passed = bool(output.get("remedial_plan_count")) or str(output.get("diagnosis_type") or "") != "unknown"

@@ -4,3 +4,4 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 chromadb>=0.5
 python-dotenv>=1.0
+tqdm>=4.66

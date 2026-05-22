@@ -36,6 +36,29 @@ class EvaluationCheckpoint:
             self.path.unlink()
         self.payload = {"config_key": self.config_key, "results": {}}
 
+    def remove_failed(self, suite_names: Optional[list[str]] = None) -> int:
+        results = self.payload.get("results")
+        if not isinstance(results, dict):
+            return 0
+
+        removed = 0
+        target_suites = suite_names or list(results.keys())
+        for suite_name in target_suites:
+            suite = results.get(suite_name)
+            if not isinstance(suite, dict):
+                continue
+            failed_ids = [
+                case_id
+                for case_id, result in suite.items()
+                if isinstance(result, dict) and result.get("passed") is False
+            ]
+            for case_id in failed_ids:
+                suite.pop(case_id, None)
+                removed += 1
+        if removed:
+            self.save()
+        return removed
+
     def _load(self) -> None:
         if not self.path.exists():
             return
@@ -45,6 +68,21 @@ class EvaluationCheckpoint:
             return
         if not isinstance(payload, dict):
             return
-        if str(payload.get("config_key") or "") != self.config_key:
+        stored_config_key = str(payload.get("config_key") or "")
+        if stored_config_key != self.config_key and not self._is_compatible_config_key(stored_config_key):
             return
         self.payload = payload
+        self.payload["config_key"] = self.config_key
+
+    def _is_compatible_config_key(self, stored_config_key: str) -> bool:
+        try:
+            stored = json.loads(stored_config_key)
+            current = json.loads(self.config_key)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(stored, dict) or not isinstance(current, dict):
+            return False
+        return (
+            stored.get("evaluation_schema_version") == current.get("evaluation_schema_version")
+            and stored.get("config") == current.get("config")
+        )
